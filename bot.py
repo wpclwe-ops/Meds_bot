@@ -1,26 +1,20 @@
+# --- ВСЕ ИМПОРТЫ ---
 import os
 import uuid
 from datetime import datetime, timedelta
 
 import asyncpg
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# --- CONFIG ---
 API_TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
-
-if not API_TOKEN:
-    raise ValueError("BOT_TOKEN not set")
-if not DB_URL:
-    raise ValueError("DATABASE_URL not set")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -63,19 +57,6 @@ async def init_db():
     );
     """)
 
-# ================= LANG =================
-
-async def get_lang(uid):
-    row = await db.fetchrow("SELECT lang FROM users WHERE user_id=$1", uid)
-    return row["lang"] if row else None
-
-async def set_lang(uid, lang):
-    await db.execute("""
-        INSERT INTO users(user_id, lang)
-        VALUES($1,$2)
-        ON CONFLICT (user_id) DO UPDATE SET lang=$2
-    """, uid, lang)
-
 # ================= MENU =================
 
 def menu():
@@ -91,6 +72,11 @@ class AddMed(StatesGroup):
     dose = State()
     freq = State()
     time = State()
+    days = State()
+
+class EditMed(StatesGroup):
+    field = State()
+    value = State()
     days = State()
 
 # ================= HELPERS =================
@@ -114,14 +100,13 @@ def reminder_kb(mid):
     return kb
 
 async def send_reminder(uid, med):
-    text = f"💊 {med['name']} ({med['dose']})"
-    await bot.send_message(uid, text, reply_markup=reminder_kb(med["id"]))
+    await bot.send_message(uid, f"💊 {med['name']} ({med['dose']})", reply_markup=reminder_kb(med["id"]))
 
 def schedule_med(med):
     h, m = map(int, med["time"].split(":"))
 
     if med["freq"] == "daily":
-        scheduler.add_job(send_reminder, "cron",
+        scheduler.add_job(send_reminder,"cron",
             args=[med["user_id"], med],
             hour=h, minute=m,
             id=f"{med['id']}_daily",
@@ -129,7 +114,7 @@ def schedule_med(med):
         )
     else:
         days = ",".join([WEEK[d] for d in med["days"]])
-        scheduler.add_job(send_reminder, "cron",
+        scheduler.add_job(send_reminder,"cron",
             args=[med["user_id"], med],
             day_of_week=days,
             hour=h, minute=m,
@@ -137,7 +122,8 @@ def schedule_med(med):
             replace_existing=True
         )
 
-async def load_jobs():
+async def reload_jobs():
+    scheduler.remove_all_jobs()
     rows = await db.fetch("SELECT * FROM meds")
     for r in rows:
         schedule_med(dict(r))
@@ -146,32 +132,9 @@ async def load_jobs():
 
 @dp.message_handler(commands=["start"])
 async def start(msg):
-    uid = str(msg.from_user.id)
+    await msg.answer("Menu", reply_markup=menu())
 
-    lang = await get_lang(uid)
-
-    if lang:
-        await msg.answer("Menu", reply_markup=menu())
-        return
-
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("English","Русский","Polski")
-    await msg.answer("Choose language", reply_markup=kb)
-
-@dp.message_handler(lambda m: m.text in ["English","Русский","Polski"])
-async def set_lang_handler(msg):
-    langs = {"English":"en","Русский":"ru","Polski":"pl"}
-    uid = str(msg.from_user.id)
-
-    await set_lang(uid, langs[msg.text])
-    await msg.answer("OK", reply_markup=menu())
-
-# ================= BUTTONS =================
-
-@dp.message_handler(lambda m: m.text == "➕ Add")
-async def add_start(msg):
-    await msg.answer("Name:")
-    await AddMed.name.set()
+# ================= TODAY =================
 
 @dp.message_handler(lambda m: m.text == "📋 Today")
 async def today(msg):
@@ -199,6 +162,11 @@ async def today(msg):
 
 # ================= ADD =================
 
+@dp.message_handler(lambda m: m.text == "➕ Add")
+async def add_start(msg):
+    await msg.answer("Name:")
+    await AddMed.name.set()
+
 @dp.message_handler(state=AddMed.name)
 async def add_name(msg,state):
     await state.update_data(name=msg.text)
@@ -208,10 +176,8 @@ async def add_name(msg,state):
 @dp.message_handler(state=AddMed.dose)
 async def add_dose(msg,state):
     await state.update_data(dose=msg.text)
-
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📅 Every day","📆 Specific days")
-
     await msg.answer("Frequency:", reply_markup=kb)
     await AddMed.freq.set()
 
@@ -221,7 +187,6 @@ async def add_freq(msg,state):
         await state.update_data(freq="daily", days=[])
     else:
         await state.update_data(freq="weekly")
-
     await msg.answer("Time HH:MM", reply_markup=ReplyKeyboardRemove())
     await AddMed.time.set()
 
@@ -239,25 +204,21 @@ async def add_time(msg,state):
         for i,d in enumerate(WEEK):
             kb.insert(InlineKeyboardButton(d, callback_data=f"d_{i}"))
         kb.add(InlineKeyboardButton("Done", callback_data="done"))
-
         await msg.answer("Select days:", reply_markup=kb)
         await AddMed.days.set()
     else:
-        await finish_add(msg, state)
+        await finish_add(msg,state)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("d_"), state=AddMed.days)
-async def pick_days(call,state):
+async def add_days(call,state):
     if call.data == "done":
-        await finish_add(call.message, state)
+        await finish_add(call.message,state)
         return
-
     d = int(call.data.split("_")[1])
     data = await state.get_data()
-    days = data.get("days", [])
-
+    days = data.get("days",[])
     if d not in days:
         days.append(d)
-
     await state.update_data(days=days)
     await call.answer("ok")
 
@@ -272,7 +233,7 @@ async def finish_add(msg,state):
         "dose": data["dose"],
         "time": data["time"],
         "freq": data["freq"],
-        "days": data.get("days", [])
+        "days": data.get("days",[])
     }
 
     await db.execute("""
@@ -280,8 +241,105 @@ async def finish_add(msg,state):
     """, *med.values())
 
     schedule_med(med)
-
     await msg.answer("Saved ✅", reply_markup=menu())
+    await state.finish()
+
+# ================= DELETE =================
+
+@dp.message_handler(lambda m: m.text == "❌ Delete")
+async def delete(msg):
+    uid = str(msg.from_user.id)
+    meds = await db.fetch("SELECT id,name FROM meds WHERE user_id=$1", uid)
+
+    kb = InlineKeyboardMarkup()
+    for m in meds:
+        kb.add(InlineKeyboardButton(m["name"], callback_data=f"del_{m['id']}"))
+
+    await msg.answer("Delete:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("del_"))
+async def delete_cb(call):
+    mid = call.data.split("_")[1]
+    await db.execute("DELETE FROM meds WHERE id=$1", mid)
+    await db.execute("DELETE FROM logs WHERE med_id=$1", mid)
+    await reload_jobs()
+    await call.message.answer("Deleted ❌", reply_markup=menu())
+
+# ================= EDIT =================
+
+@dp.message_handler(lambda m: m.text == "✏️ Edit")
+async def edit(msg):
+    uid = str(msg.from_user.id)
+    meds = await db.fetch("SELECT id,name FROM meds WHERE user_id=$1", uid)
+
+    kb = InlineKeyboardMarkup()
+    for m in meds:
+        kb.add(InlineKeyboardButton(m["name"], callback_data=f"edit_{m['id']}"))
+
+    await msg.answer("Choose:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
+async def edit_choose(call,state):
+    mid = call.data.split("_")[1]
+    await state.update_data(mid=mid)
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Name","field_name"))
+    kb.add(InlineKeyboardButton("Dose","field_dose"))
+    kb.add(InlineKeyboardButton("Time","field_time"))
+    kb.add(InlineKeyboardButton("Days","field_days"))
+
+    await call.message.answer("Field:", reply_markup=kb)
+    await EditMed.field.set()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("field_"), state=EditMed.field)
+async def edit_field(call,state):
+    field = call.data.split("_")[1]
+    await state.update_data(field=field)
+
+    if field == "days":
+        kb = InlineKeyboardMarkup()
+        for i,d in enumerate(WEEK):
+            kb.insert(InlineKeyboardButton(d, callback_data=f"ed_{i}"))
+        kb.add(InlineKeyboardButton("Done", callback_data="ed_done"))
+        await call.message.answer("Select days:", reply_markup=kb)
+        await EditMed.days.set()
+    else:
+        await call.message.answer("New value:")
+        await EditMed.value.set()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("ed_"), state=EditMed.days)
+async def edit_days(call,state):
+    if call.data == "ed_done":
+        data = await state.get_data()
+        await db.execute("UPDATE meds SET days=$1 WHERE id=$2", data["days"], data["mid"])
+        await reload_jobs()
+        await call.message.answer("Updated ✅", reply_markup=menu())
+        await state.finish()
+        return
+
+    d = int(call.data.split("_")[1])
+    data = await state.get_data()
+    days = data.get("days",[])
+    if d not in days:
+        days.append(d)
+    await state.update_data(days=days)
+    await call.answer("ok")
+
+@dp.message_handler(state=EditMed.value)
+async def edit_save(msg,state):
+    data = await state.get_data()
+    mid = data["mid"]
+    field = data["field"]
+
+    if field == "time" and not validate_time(msg.text):
+        await msg.answer("Invalid time")
+        return
+
+    await db.execute(f"UPDATE meds SET {field}=$1 WHERE id=$2", msg.text, mid)
+    await reload_jobs()
+
+    await msg.answer("Updated ✅", reply_markup=menu())
     await state.finish()
 
 # ================= CALLBACKS =================
@@ -330,7 +388,7 @@ async def snooze(call):
 
 async def on_startup(dp):
     await init_db()
-    await load_jobs()
+    await reload_jobs()
     scheduler.start()
 
 if __name__ == "__main__":
