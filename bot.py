@@ -4,16 +4,23 @@ from datetime import datetime, timedelta
 
 import asyncpg
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove
+)
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
+
+if not API_TOKEN:
+    raise ValueError("BOT_TOKEN not set")
+if not DB_URL:
+    raise ValueError("DATABASE_URL not set")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -28,6 +35,13 @@ async def init_db():
     db = await asyncpg.connect(DB_URL)
 
     await db.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        lang TEXT
+    );
+    """)
+
+    await db.execute("""
     CREATE TABLE IF NOT EXISTS meds (
         id TEXT PRIMARY KEY,
         user_id TEXT,
@@ -36,7 +50,7 @@ async def init_db():
         time TEXT,
         freq TEXT,
         days INT[]
-    )
+    );
     """)
 
     await db.execute("""
@@ -46,8 +60,21 @@ async def init_db():
         med_id TEXT,
         status TEXT,
         time TIMESTAMP
-    )
+    );
     """)
+
+# ================= LANG =================
+
+async def get_lang(uid):
+    row = await db.fetchrow("SELECT lang FROM users WHERE user_id=$1", uid)
+    return row["lang"] if row else None
+
+async def set_lang(uid, lang):
+    await db.execute("""
+        INSERT INTO users(user_id, lang)
+        VALUES($1,$2)
+        ON CONFLICT (user_id) DO UPDATE SET lang=$2
+    """, uid, lang)
 
 # ================= MENU =================
 
@@ -70,6 +97,13 @@ class AddMed(StatesGroup):
 
 WEEK = ["mon","tue","wed","thu","fri","sat","sun"]
 
+def validate_time(t):
+    try:
+        datetime.strptime(t, "%H:%M")
+        return True
+    except:
+        return False
+
 def reminder_kb(mid):
     kb = InlineKeyboardMarkup()
     kb.add(
@@ -89,14 +123,18 @@ def schedule_med(med):
     if med["freq"] == "daily":
         scheduler.add_job(send_reminder, "cron",
             args=[med["user_id"], med],
-            hour=h, minute=m
+            hour=h, minute=m,
+            id=f"{med['id']}_daily",
+            replace_existing=True
         )
     else:
         days = ",".join([WEEK[d] for d in med["days"]])
         scheduler.add_job(send_reminder, "cron",
             args=[med["user_id"], med],
             day_of_week=days,
-            hour=h, minute=m
+            hour=h, minute=m,
+            id=f"{med['id']}_weekly",
+            replace_existing=True
         )
 
 async def load_jobs():
@@ -107,8 +145,26 @@ async def load_jobs():
 # ================= START =================
 
 @dp.message_handler(commands=["start"])
-async def start(msg: types.Message):
-    await msg.answer("Menu", reply_markup=menu())
+async def start(msg):
+    uid = str(msg.from_user.id)
+
+    lang = await get_lang(uid)
+
+    if lang:
+        await msg.answer("Menu", reply_markup=menu())
+        return
+
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("English","Русский","Polski")
+    await msg.answer("Choose language", reply_markup=kb)
+
+@dp.message_handler(lambda m: m.text in ["English","Русский","Polski"])
+async def set_lang_handler(msg):
+    langs = {"English":"en","Русский":"ru","Polski":"pl"}
+    uid = str(msg.from_user.id)
+
+    await set_lang(uid, langs[msg.text])
+    await msg.answer("OK", reply_markup=menu())
 
 # ================= BUTTONS =================
 
@@ -152,28 +208,39 @@ async def add_name(msg,state):
 @dp.message_handler(state=AddMed.dose)
 async def add_dose(msg,state):
     await state.update_data(dose=msg.text)
-    await msg.answer("Daily or weekly?")
+
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📅 Every day","📆 Specific days")
+
+    await msg.answer("Frequency:", reply_markup=kb)
     await AddMed.freq.set()
 
 @dp.message_handler(state=AddMed.freq)
 async def add_freq(msg,state):
-    txt = msg.text.lower()
-    await state.update_data(freq="daily" if "day" in txt else "weekly")
-    await msg.answer("Time HH:MM")
+    if "Every" in msg.text:
+        await state.update_data(freq="daily", days=[])
+    else:
+        await state.update_data(freq="weekly")
+
+    await msg.answer("Time HH:MM", reply_markup=ReplyKeyboardRemove())
     await AddMed.time.set()
 
 @dp.message_handler(state=AddMed.time)
 async def add_time(msg,state):
-    await state.update_data(time=msg.text)
+    if not validate_time(msg.text):
+        await msg.answer("Invalid time")
+        return
 
+    await state.update_data(time=msg.text)
     data = await state.get_data()
+
     if data["freq"] == "weekly":
         kb = InlineKeyboardMarkup()
         for i,d in enumerate(WEEK):
             kb.insert(InlineKeyboardButton(d, callback_data=f"d_{i}"))
         kb.add(InlineKeyboardButton("Done", callback_data="done"))
 
-        await msg.answer("Days:", reply_markup=kb)
+        await msg.answer("Select days:", reply_markup=kb)
         await AddMed.days.set()
     else:
         await finish_add(msg, state)
