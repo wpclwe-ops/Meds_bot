@@ -1,4 +1,4 @@
-# ПОЛНАЯ версия: add / edit / delete / weekly / scheduler / taken / snooze / langs / validation
+# ⚠️ большой код — это нормально
 
 import os, uuid, re
 from datetime import datetime, timedelta
@@ -26,48 +26,32 @@ user_lang = {}
 # ===== TEXTS =====
 
 TEXTS = {
-"en":{
-"menu":"Menu","add":"➕ Add","today":"📋 Today","edit":"✏️ Edit","delete":"❌ Delete","taken":"✅ Mark as taken",
+"en":{"menu":"Menu","add":"➕ Add","today":"📋 Today","edit":"✏️ Edit","delete":"❌ Delete","taken":"✅ Mark as taken",
 "name":"Enter medicine name:","dose":"Enter dose:","freq":"Choose frequency:",
 "daily":"Every day","weekly":"Specific days","time":"Enter time (HH:MM):","days":"Select days:",
 "saved":"Saved ✅","choose_med":"Select a medicine:","choose_field":"Choose field:",
 "new_val":"Enter new value:","updated":"Updated ✅","deleted":"Deleted ❌",
 "today_empty":"No medicines today","invalid":"Invalid input","bad_time":"Invalid time format",
-"error":"Something went wrong. Please try again."
-},
-"ru":{
-"menu":"Меню","add":"➕ Добавить","today":"📋 Сегодня","edit":"✏️ Редактировать","delete":"❌ Удалить","taken":"✅ Отметить как принятое",
+"error":"Something went wrong. Please try again."},
+
+"ru":{"menu":"Меню","add":"➕ Добавить","today":"📋 Сегодня","edit":"✏️ Редактировать","delete":"❌ Удалить","taken":"✅ Отметить как принятое",
 "name":"Введите название лекарства:","dose":"Введите дозировку:","freq":"Выберите частоту:",
 "daily":"Каждый день","weekly":"Выбрать дни","time":"Введите время (ЧЧ:ММ):","days":"Выберите дни:",
 "saved":"Сохранено ✅","choose_med":"Выберите лекарство:","choose_field":"Выберите поле:",
 "new_val":"Введите новое значение:","updated":"Обновлено ✅","deleted":"Удалено ❌",
 "today_empty":"Сегодня ничего нет","invalid":"Неверный ввод","bad_time":"Неверный формат времени",
-"error":"Что-то пошло не так. Попробуйте снова."
-},
-"pl":{
-"menu":"Menu","add":"➕ Dodaj","today":"📋 Dzisiaj","edit":"✏️ Edytuj","delete":"❌ Usuń","taken":"✅ Oznacz jako przyjęte",
+"error":"Что-то пошло не так. Попробуйте снова."},
+
+"pl":{"menu":"Menu","add":"➕ Dodaj","today":"📋 Dzisiaj","edit":"✏️ Edytuj","delete":"❌ Usuń","taken":"✅ Oznacz jako przyjęte",
 "name":"Podaj nazwę leku:","dose":"Podaj dawkę:","freq":"Wybierz częstotliwość:",
 "daily":"Codziennie","weekly":"Wybrane dni","time":"Podaj godzinę (HH:MM):","days":"Wybierz dni:",
 "saved":"Zapisano ✅","choose_med":"Wybierz lek:","choose_field":"Wybierz pole:",
 "new_val":"Podaj nową wartość:","updated":"Zaktualizowano ✅","deleted":"Usunięto ❌",
 "today_empty":"Brak leków na dziś","invalid":"Nieprawidłowe dane","bad_time":"Zły format godziny",
-"error":"Coś poszło nie tak. Spróbuj ponownie."
-}
+"error":"Coś poszło nie tak. Spróbuj ponownie."}
 }
 
 def t(uid,k): return TEXTS[user_lang.get(uid,"en")][k]
-
-# ===== DB =====
-
-async def init_db():
-    global db
-    db = await asyncpg.connect(DB_URL)
-
-    await db.execute("""CREATE TABLE IF NOT EXISTS users(user_id TEXT PRIMARY KEY, lang TEXT);""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS meds(id TEXT PRIMARY KEY,user_id TEXT,name TEXT,dose TEXT,time TEXT,freq TEXT,days INT[]);""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS logs(id SERIAL PRIMARY KEY,user_id TEXT,med_id TEXT,status TEXT,time TIMESTAMP);""")
-
-# ===== HELPERS =====
 
 WEEK=["mon","tue","wed","thu","fri","sat","sun"]
 
@@ -119,7 +103,15 @@ async def reload_jobs():
     for r in rows:
         schedule(dict(r))
 
-# ===== START / LANG =====
+async def init_db():
+    global db
+    db = await asyncpg.connect(DB_URL)
+
+    await db.execute("""CREATE TABLE IF NOT EXISTS users(user_id TEXT PRIMARY KEY, lang TEXT);""")
+    await db.execute("""CREATE TABLE IF NOT EXISTS meds(id TEXT PRIMARY KEY,user_id TEXT,name TEXT,dose TEXT,time TEXT,freq TEXT,days INT[]);""")
+    await db.execute("""CREATE TABLE IF NOT EXISTS logs(id SERIAL PRIMARY KEY,user_id TEXT,med_id TEXT,status TEXT,time TIMESTAMP);""")
+
+# ===== START =====
 
 @dp.message_handler(commands=["start"])
 async def start(msg):
@@ -146,20 +138,24 @@ class Add(StatesGroup):
 
 @dp.message_handler(lambda m: "Add" in m.text or "Добавить" in m.text or "Dodaj" in m.text)
 async def add(msg):
-    await msg.answer(t(str(msg.from_user.id),"name")); await Add.name.set()
+    await msg.answer(t(str(msg.from_user.id),"name"))
+    await Add.name.set()
 
 @dp.message_handler(state=Add.name)
 async def a1(msg,state):
-    if not valid_text(msg.text): return await msg.answer(t(str(msg.from_user.id),"invalid"))
+    if not valid_text(msg.text):
+        return await msg.answer(t(str(msg.from_user.id),"invalid"))
     await state.update_data(name=msg.text)
-    await msg.answer(t(str(msg.from_user.id),"dose")); await Add.dose.set()
+    await msg.answer(t(str(msg.from_user.id),"dose"))
+    await Add.dose.set()
 
 @dp.message_handler(state=Add.dose)
 async def a2(msg,state):
     await state.update_data(dose=msg.text)
     uid=str(msg.from_user.id)
     kb=ReplyKeyboardMarkup(resize_keyboard=True).add(t(uid,"daily"),t(uid,"weekly"))
-    await msg.answer(t(uid,"freq"),reply_markup=kb); await Add.freq.set()
+    await msg.answer(t(uid,"freq"),reply_markup=kb)
+    await Add.freq.set()
 
 @dp.message_handler(state=Add.freq)
 async def a3(msg,state):
@@ -170,7 +166,8 @@ async def a3(msg,state):
 
 @dp.message_handler(state=Add.time)
 async def a4(msg,state):
-    if not valid_time(msg.text): return await msg.answer(t(str(msg.from_user.id),"bad_time"))
+    if not valid_time(msg.text):
+        return await msg.answer(t(str(msg.from_user.id),"bad_time"))
     await state.update_data(time=msg.text)
     data=await state.get_data()
 
@@ -187,14 +184,17 @@ async def a_days(call,state):
         if not data.get("days"):
             await call.answer("Select at least one day")
             return
-        await finish_add(call.message,state); return
+        await finish_add(call.message,state)
+        return
 
     d=int(call.data.split("_")[1])
     data=await state.get_data()
     days=data.get("days") or []
 
-    if d in days: days.remove(d)
-    else: days.append(d)
+    if d in days:
+        days.remove(d)
+    else:
+        days.append(d)
 
     await state.update_data(days=days)
     await call.message.edit_reply_markup(days_kb(days))
@@ -212,35 +212,13 @@ async def finish_add(msg,state):
     await msg.answer(t(uid,"saved"),reply_markup=menu(uid))
     await state.finish()
 
-# ===== TODAY =====
-
-@dp.message_handler(lambda m: "Today" in m.text or "Сегодня" in m.text or "Dzisiaj" in m.text)
-async def today(msg):
-    uid=str(msg.from_user.id)
-    now=datetime.now(TZ)
-
-    meds=await db.fetch("SELECT * FROM meds WHERE user_id=$1",uid)
-    logs=await db.fetch("""
-    SELECT * FROM logs WHERE user_id=$1
-    AND DATE(time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Warsaw')=CURRENT_DATE
-    """,uid)
-
-    log_map={l["med_id"]:l["status"] for l in logs}
-    res=[]
-
-    for m in meds:
-        if m["freq"]=="daily" or now.weekday() in m["days"]:
-            status=log_map.get(m["id"],"pending")
-            icon={"taken":"✅","skipped":"❌","snoozed":"⏳"}.get(status,"⏺")
-            res.append(f"{m['time']} {m['name']} {icon}")
-
-    res.sort()
-    await msg.answer("\n".join(res) if res else t(uid,"today_empty"))
-
-# ===== RUN =====
+# ===== STARTUP =====
 
 async def on_startup(dp):
     await init_db()
+
+    # 🔥 КРИТИЧНЫЙ ФИКС
+    await bot.delete_webhook(drop_pending_updates=True)
 
     rows=await db.fetch("SELECT * FROM users")
     for r in rows:
