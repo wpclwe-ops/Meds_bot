@@ -63,7 +63,6 @@ class AddMed(StatesGroup):
 class EditMed(StatesGroup):
     field = State()
     value = State()
-    days = State()
 
 # ===== HELPERS =====
 
@@ -80,14 +79,6 @@ def menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("➕ Add", "📋 Today")
     kb.add("✏️ Edit", "❌ Delete")
-    return kb
-
-def days_kb(selected=[]):
-    kb = InlineKeyboardMarkup(row_width=3)
-    for i, d in enumerate(WEEK):
-        label = f"✔ {d}" if i in selected else d
-        kb.insert(InlineKeyboardButton(label, callback_data=f"d_{i}"))
-    kb.add(InlineKeyboardButton("Done", callback_data="done"))
     return kb
 
 def reminder_kb(mid):
@@ -126,6 +117,12 @@ def schedule_med(med):
             id=job_id
         )
 
+async def reload_jobs():
+    scheduler.remove_all_jobs()
+    rows = await db.fetch("SELECT * FROM meds")
+    for r in rows:
+        schedule_med(dict(r))
+
 # ===== START =====
 
 @dp.message_handler(commands=["start"])
@@ -137,26 +134,45 @@ async def start(msg):
 @dp.message_handler(lambda m: m.text == "📋 Today")
 async def today(msg):
     uid = str(msg.from_user.id)
+    now = datetime.now(TZ)
 
-    rows = await db.fetch("""
-        SELECT m.name, m.dose, l.status, l.time
-        FROM logs l
-        JOIN meds m ON m.id = l.med_id
-        WHERE l.user_id = $1
-        AND DATE(l.time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Warsaw') = CURRENT_DATE
-        ORDER BY l.time
+    meds = await db.fetch("SELECT * FROM meds WHERE user_id=$1", uid)
+    logs = await db.fetch("""
+        SELECT * FROM logs 
+        WHERE user_id=$1 
+        AND DATE(time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Warsaw') = CURRENT_DATE
     """, uid)
 
-    if not rows:
+    log_map = {l["med_id"]: l["status"] for l in logs}
+
+    result = []
+
+    for m in meds:
+        if m["freq"] == "daily":
+            show = True
+        else:
+            show = now.weekday() in m["days"]
+
+        if not show:
+            continue
+
+        status = log_map.get(m["id"], "pending")
+
+        icon = "⏺"
+        if status == "taken":
+            icon = "✅"
+        elif status == "skipped":
+            icon = "❌"
+        elif status == "snoozed":
+            icon = "⏳"
+
+        result.append(f"{m['time']} {m['name']} {icon}")
+
+    if not result:
         await msg.answer("Empty")
         return
 
-    text = ""
-    for r in rows:
-        status = "✅" if r["status"] == "taken" else "❌"
-        text += f"{r['time'].astimezone(TZ).strftime('%H:%M')} {r['name']} {status}\n"
-
-    await msg.answer(text)
+    await msg.answer("\n".join(result))
 
 # ===== ADD =====
 
@@ -167,8 +183,6 @@ async def add_start(msg):
 
 @dp.message_handler(state=AddMed.name)
 async def add_name(msg,state):
-    if len(msg.text) < 1:
-        return await msg.answer("Invalid")
     await state.update_data(name=msg.text)
     await msg.answer("Dose:")
     await AddMed.dose.set()
@@ -185,12 +199,11 @@ async def add_dose(msg,state):
 async def add_freq(msg,state):
     if "Every" in msg.text:
         await state.update_data(freq="daily", days=[])
-        await msg.answer("Time HH:MM", reply_markup=ReplyKeyboardRemove())
-        await AddMed.time.set()
     else:
         await state.update_data(freq="weekly")
-        await msg.answer("Time HH:MM", reply_markup=ReplyKeyboardRemove())
-        await AddMed.time.set()
+
+    await msg.answer("Time HH:MM", reply_markup=ReplyKeyboardRemove())
+    await AddMed.time.set()
 
 @dp.message_handler(state=AddMed.time)
 async def add_time(msg,state):
@@ -201,7 +214,11 @@ async def add_time(msg,state):
     data = await state.get_data()
 
     if data["freq"] == "weekly":
-        await msg.answer("Select days:", reply_markup=days_kb())
+        kb = InlineKeyboardMarkup()
+        for i,d in enumerate(WEEK):
+            kb.insert(InlineKeyboardButton(d, callback_data=f"d_{i}"))
+        kb.add(InlineKeyboardButton("Done", callback_data="done"))
+        await msg.answer("Select days:", reply_markup=kb)
         await AddMed.days.set()
     else:
         await finish_add(msg,state)
@@ -222,7 +239,7 @@ async def add_days(call,state):
         days.append(d)
 
     await state.update_data(days=days)
-    await call.message.edit_reply_markup(days_kb(days))
+    await call.answer("ok")
 
 async def finish_add(msg,state):
     data = await state.get_data()
@@ -248,7 +265,89 @@ async def finish_add(msg,state):
     await msg.answer("Saved ✅", reply_markup=menu())
     await state.finish()
 
-# ===== TAKE / SKIP / SNOOZE =====
+# ===== DELETE =====
+
+@dp.message_handler(lambda m: m.text == "❌ Delete")
+async def delete(msg):
+    uid = str(msg.from_user.id)
+    meds = await db.fetch("SELECT id,name FROM meds WHERE user_id=$1", uid)
+
+    kb = InlineKeyboardMarkup()
+    for m in meds:
+        kb.add(InlineKeyboardButton(m["name"], callback_data=f"del_{m['id']}"))
+
+    await msg.answer("Delete:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("del_"))
+async def delete_cb(call):
+    mid = call.data.split("_")[1]
+
+    await db.execute("DELETE FROM meds WHERE id=$1", mid)
+    await db.execute("DELETE FROM logs WHERE med_id=$1", mid)
+
+    try:
+        scheduler.remove_job(mid)
+    except:
+        pass
+
+    await call.message.answer("Deleted ❌", reply_markup=menu())
+
+# ===== EDIT =====
+
+@dp.message_handler(lambda m: m.text == "✏️ Edit")
+async def edit(msg):
+    uid = str(msg.from_user.id)
+    meds = await db.fetch("SELECT id,name FROM meds WHERE user_id=$1", uid)
+
+    kb = InlineKeyboardMarkup()
+    for m in meds:
+        kb.add(InlineKeyboardButton(m["name"], callback_data=f"edit_{m['id']}"))
+
+    await msg.answer("Choose:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
+async def edit_choose(call, state: FSMContext):
+    await state.update_data(mid=call.data.split("_")[1])
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Name", callback_data="field_name"))
+    kb.add(InlineKeyboardButton("Dose", callback_data="field_dose"))
+    kb.add(InlineKeyboardButton("Time", callback_data="field_time"))
+
+    await call.message.answer("Field:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("field_"))
+async def edit_field(call, state: FSMContext):
+    await state.update_data(field=call.data.split("_")[1])
+    await call.message.answer("Send new value:")
+
+@dp.message_handler(state="*")
+async def edit_save(msg, state: FSMContext):
+    data = await state.get_data()
+
+    if "mid" not in data:
+        return
+
+    field = data["field"]
+    mid = data["mid"]
+
+    if field == "time" and not validate_time(msg.text):
+        await msg.answer("Invalid time")
+        return
+
+    if field == "name":
+        await db.execute("UPDATE meds SET name=$1 WHERE id=$2", msg.text, mid)
+    elif field == "dose":
+        await db.execute("UPDATE meds SET dose=$1 WHERE id=$2", msg.text, mid)
+    elif field == "time":
+        await db.execute("UPDATE meds SET time=$1 WHERE id=$2", msg.text, mid)
+
+    await reload_jobs()
+
+    await msg.answer("Updated ✅", reply_markup=menu())
+    await state.finish()
+
+# ===== CALLBACKS =====
 
 @dp.callback_query_handler(lambda c: c.data.startswith("take_"))
 async def take(call):
@@ -299,6 +398,7 @@ async def snooze(call):
 
 async def on_startup(dp):
     await init_db()
+    await reload_jobs()
     scheduler.start()
 
 if __name__ == "__main__":
