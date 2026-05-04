@@ -1,3 +1,4 @@
 aiogram==2.25.1
 APScheduler==3.10.4
 asyncpg
+pytz
