@@ -44,7 +44,7 @@ def save(file, data):
 
 TEXTS = {
     "en": {
-        "start": "Choose language",
+        "menu": "Menu:",
         "saved": "Saved ✅",
         "deleted": "Deleted ❌",
         "updated": "Updated ✅",
@@ -53,16 +53,15 @@ TEXTS = {
         "add_dose": "Dose:",
         "add_freq": "Frequency?",
         "daily": "Daily",
-        "weekly": "Weekly (select days)",
-        "add_time": "Time (HH:MM):",
-        "invalid_time": "Invalid time format",
+        "weekly": "Weekly",
+        "add_time": "Time HH:MM",
+        "invalid_time": "Invalid time",
         "add_days": "Select days",
-        "done": "Done",
         "add_food": "With food?",
         "add_note": "Notes or -"
     },
     "ru": {
-        "start": "Выбери язык",
+        "menu": "Меню:",
         "saved": "Сохранено ✅",
         "deleted": "Удалено ❌",
         "updated": "Обновлено ✅",
@@ -75,12 +74,11 @@ TEXTS = {
         "add_time": "Время HH:MM",
         "invalid_time": "Неверный формат",
         "add_days": "Выбери дни",
-        "done": "Готово",
         "add_food": "С едой?",
         "add_note": "Заметка или -"
     },
     "pl": {
-        "start": "Wybierz język",
+        "menu": "Menu:",
         "saved": "Zapisano ✅",
         "deleted": "Usunięto ❌",
         "updated": "Zaktualizowano ✅",
@@ -93,7 +91,6 @@ TEXTS = {
         "add_time": "Godzina HH:MM",
         "invalid_time": "Zły format",
         "add_days": "Wybierz dni",
-        "done": "Gotowe",
         "add_food": "Z jedzeniem?",
         "add_note": "Uwagi lub -"
     }
@@ -104,6 +101,24 @@ def get_lang(uid):
 
 def t(uid, key):
     return TEXTS[get_lang(uid)][key]
+
+# ================= MENU =================
+
+def main_menu(uid):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    lang = get_lang(uid)
+
+    if lang == "ru":
+        kb.add("➕ Добавить", "📋 Сегодня")
+        kb.add("✏️ Редактировать", "❌ Удалить")
+    elif lang == "pl":
+        kb.add("➕ Dodaj", "📋 Dziś")
+        kb.add("✏️ Edytuj", "❌ Usuń")
+    else:
+        kb.add("➕ Add", "📋 Today")
+        kb.add("✏️ Edit", "❌ Delete")
+
+    return kb
 
 # ================= FSM =================
 
@@ -158,21 +173,10 @@ def schedule_med(uid, med):
     h, m = map(int, med["time"].split(":"))
 
     if med["freq"] == "daily":
-        scheduler.add_job(
-            send_reminder, "cron",
-            args=[uid, med],
-            hour=h, minute=m,
-            id=f"{uid}_{med['id']}"
-        )
+        scheduler.add_job(send_reminder,"cron",args=[uid,med],hour=h,minute=m,id=f"{uid}_{med['id']}")
     else:
         days = ",".join([WEEK[d] for d in med["days"]])
-        scheduler.add_job(
-            send_reminder, "cron",
-            args=[uid, med],
-            day_of_week=days,
-            hour=h, minute=m,
-            id=f"{uid}_{med['id']}"
-        )
+        scheduler.add_job(send_reminder,"cron",args=[uid,med],day_of_week=days,hour=h,minute=m,id=f"{uid}_{med['id']}")
 
 def reload_jobs():
     scheduler.remove_all_jobs()
@@ -185,6 +189,12 @@ def reload_jobs():
 
 @dp.message_handler(commands=["start"])
 async def start(msg: types.Message):
+    uid = str(msg.from_user.id)
+
+    if load(USERS_FILE).get(uid):
+        await msg.answer(t(uid,"menu"), reply_markup=main_menu(uid))
+        return
+
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("English", "Русский", "Polski")
     await msg.answer("Choose language", reply_markup=kb)
@@ -192,10 +202,31 @@ async def start(msg: types.Message):
 @dp.message_handler(lambda m: m.text in ["English","Русский","Polski"])
 async def set_lang(msg: types.Message):
     langs = {"English":"en","Русский":"ru","Polski":"pl"}
+    uid = str(msg.from_user.id)
+
     data = load(USERS_FILE)
-    data[str(msg.from_user.id)] = {"lang": langs[msg.text]}
+    data[uid] = {"lang": langs[msg.text]}
     save(USERS_FILE, data)
-    await msg.answer("OK", reply_markup=ReplyKeyboardRemove())
+
+    await msg.answer("OK", reply_markup=main_menu(uid))
+
+# ================= BUTTONS =================
+
+@dp.message_handler(lambda m: m.text in ["➕ Добавить","➕ Add","➕ Dodaj"])
+async def btn_add(msg):
+    await add(msg)
+
+@dp.message_handler(lambda m: m.text in ["📋 Сегодня","📋 Today","📋 Dziś"])
+async def btn_today(msg):
+    await today(msg)
+
+@dp.message_handler(lambda m: m.text in ["✏️ Редактировать","✏️ Edit","✏️ Edytuj"])
+async def btn_edit(msg):
+    await edit(msg)
+
+@dp.message_handler(lambda m: m.text in ["❌ Удалить","❌ Delete","❌ Usuń"])
+async def btn_delete(msg):
+    await delete(msg)
 
 # ================= ADD =================
 
@@ -214,10 +245,7 @@ async def add_name(msg,state):
 async def add_dose(msg,state):
     await state.update_data(dose=msg.text)
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(
-        t(str(msg.from_user.id),"daily"),
-        t(str(msg.from_user.id),"weekly")
-    )
+    kb.add(t(str(msg.from_user.id),"daily"), t(str(msg.from_user.id),"weekly"))
     await msg.answer(t(str(msg.from_user.id),"add_freq"), reply_markup=kb)
     await AddMed.freq.set()
 
@@ -242,7 +270,6 @@ async def add_time(msg,state):
         for i,d in enumerate(WEEK):
             kb.insert(InlineKeyboardButton(d, callback_data=f"d_{i}"))
         kb.add(InlineKeyboardButton("Done", callback_data="d_done"))
-
         await msg.answer(t(str(msg.from_user.id),"add_days"), reply_markup=kb)
         await AddMed.days.set()
     else:
@@ -298,10 +325,9 @@ async def finish(msg,state):
 
     meds[uid].append(med)
     save(MEDS_FILE, meds)
-
     reload_jobs()
 
-    await msg.answer(t(uid,"saved"))
+    await msg.answer(t(uid,"saved"), reply_markup=main_menu(uid))
     await state.finish()
 
 # ================= DELETE =================
@@ -324,11 +350,10 @@ async def delete_cb(call):
 
     meds = load(MEDS_FILE)
     meds[uid] = [m for m in meds[uid] if m["id"] != mid]
-
     save(MEDS_FILE, meds)
-    reload_jobs()
 
-    await call.message.answer("Deleted ❌")
+    reload_jobs()
+    await call.message.answer("Deleted ❌", reply_markup=main_menu(uid))
 
 # ================= EDIT =================
 
@@ -377,7 +402,7 @@ async def edit_save(msg,state):
     save(MEDS_FILE, meds)
     reload_jobs()
 
-    await msg.answer("Updated ✅")
+    await msg.answer("Updated ✅", reply_markup=main_menu(uid))
     await state.finish()
 
 # ================= CALLBACKS =================
@@ -445,10 +470,10 @@ async def today(msg):
     entries = [e for e in logs if e["time"].startswith(today)]
 
     if not entries:
-        await msg.answer(t(uid,"today_empty"))
+        await msg.answer(t(uid,"today_empty"), reply_markup=main_menu(uid))
         return
 
-    await msg.answer("\n".join([f"{e['time'][11:]} {e['status']}" for e in entries]))
+    await msg.answer("\n".join([f"{e['time'][11:]} {e['status']}" for e in entries]), reply_markup=main_menu(uid))
 
 # ================= RUN =================
 
