@@ -796,7 +796,164 @@ async def snooze_callback(call: CallbackQuery):
     except:
         pass
 
+# =========================================================
+# EDIT
+# =========================================================
 
+class EditMed(StatesGroup):
+    choosing_med = State()
+    choosing_field = State()
+    new_value = State()
+
+
+@dp.message_handler(lambda m: m.text and (
+    "Edit" in m.text
+    or "Редактировать" in m.text
+    or "Edytuj" in m.text
+))
+async def edit_menu(message):
+
+    uid = str(message.from_user.id)
+
+    meds = await db.fetch("""
+    SELECT id, name
+    FROM meds
+    WHERE user_id=$1
+    """, uid)
+
+    if not meds:
+        return await message.answer(
+            t(uid, "today_empty")
+        )
+
+    kb = InlineKeyboardMarkup()
+
+    for med in meds:
+
+        kb.add(
+            InlineKeyboardButton(
+                med["name"],
+                callback_data=f"editmed_{med['id']}"
+            )
+        )
+
+    await message.answer(
+        t(uid, "choose_med"),
+        reply_markup=kb
+    )
+
+    await EditMed.choosing_med.set()
+
+
+@dp.callback_query_handler(
+    lambda c: c.data.startswith("editmed_"),
+    state=EditMed.choosing_med
+)
+async def edit_choose_field(call, state):
+
+    med_id = call.data.split("_")[1]
+
+    await state.update_data(med_id=med_id)
+
+    kb = InlineKeyboardMarkup()
+
+    fields = [
+        ("name", "Name"),
+        ("dose", "Dose"),
+        ("time", "Time"),
+    ]
+
+    for field_key, field_name in fields:
+
+        kb.add(
+            InlineKeyboardButton(
+                field_name,
+                callback_data=f"field_{field_key}"
+            )
+        )
+
+    await call.message.answer(
+        t(str(call.from_user.id), "choose_field"),
+        reply_markup=kb
+    )
+
+    await EditMed.choosing_field.set()
+
+
+@dp.callback_query_handler(
+    lambda c: c.data.startswith("field_"),
+    state=EditMed.choosing_field
+)
+async def edit_new_value(call, state):
+
+    field = call.data.split("_")[1]
+
+    await state.update_data(field=field)
+
+    await call.message.answer(
+        t(str(call.from_user.id), "new_value"),
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await EditMed.new_value.set()
+
+
+@dp.message_handler(state=EditMed.new_value)
+async def save_new_value(message, state):
+
+    uid = str(message.from_user.id)
+
+    data = await state.get_data()
+
+    med_id = data["med_id"]
+    field = data["field"]
+
+    value = message.text.strip()
+
+    if field in ["name", "dose"]:
+
+        if not valid_text(value):
+            return await message.answer(
+                t(uid, "invalid")
+            )
+
+    if field == "time":
+
+        if not valid_time(value):
+            return await message.answer(
+                t(uid, "bad_time")
+            )
+
+    allowed_fields = ["name", "dose", "time"]
+
+    if field not in allowed_fields:
+        return await message.answer(
+            t(uid, "error")
+        )
+
+    query = f"""
+    UPDATE meds
+    SET {field}=$1
+    WHERE id=$2
+    """
+
+    await db.execute(query, value, med_id)
+
+    med = await db.fetchrow("""
+    SELECT * FROM meds
+    WHERE id=$1
+    """, med_id)
+
+    if med:
+        schedule_med(dict(med))
+
+    await message.answer(
+        t(uid, "updated"),
+        reply_markup=main_menu(uid)
+    )
+
+    await state.finish()
+    
 # =========================================================
 # DELETE
 # =========================================================
