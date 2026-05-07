@@ -2,6 +2,7 @@
 
 import os, uuid, re
 from datetime import datetime, timedelta
+from aiogram.types import CallbackQuery
 import pytz, asyncpg
 
 from aiogram import Bot, Dispatcher
@@ -83,6 +84,77 @@ async def send_reminder(uid,med):
         InlineKeyboardButton("❌",callback_data=f"skip_{med['id']}")
     )
     await bot.send_message(uid,f"💊 {med['name']} ({med['dose']})",reply_markup=kb)
+
+# ===== REMINDER CALLBACKS =====
+
+@dp.callback_query_handler(lambda c: c.data.startswith("take_"))
+async def take(call: CallbackQuery):
+    uid = str(call.from_user.id)
+    mid = call.data.split("_")[1]
+
+    await db.execute("""
+    INSERT INTO logs(user_id, med_id, status, time)
+    VALUES($1,$2,'taken',NOW())
+    """, uid, mid)
+
+    await call.answer("Taken ✅")
+
+    try:
+        await call.message.edit_reply_markup()
+    except:
+        pass
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("skip_"))
+async def skip(call: CallbackQuery):
+    uid = str(call.from_user.id)
+    mid = call.data.split("_")[1]
+
+    await db.execute("""
+    INSERT INTO logs(user_id, med_id, status, time)
+    VALUES($1,$2,'skipped',NOW())
+    """, uid, mid)
+
+    await call.answer("Skipped ❌")
+
+    try:
+        await call.message.edit_reply_markup()
+    except:
+        pass
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_"))
+async def snooze(call: CallbackQuery):
+    uid = str(call.from_user.id)
+
+    _, mid, mins = call.data.split("_")
+
+    med = await db.fetchrow(
+        "SELECT * FROM meds WHERE id=$1",
+        mid
+    )
+
+    if not med:
+        return await call.answer("Medicine not found")
+
+    await db.execute("""
+    INSERT INTO logs(user_id, med_id, status, time)
+    VALUES($1,$2,'snoozed',NOW())
+    """, uid, mid)
+
+    scheduler.add_job(
+        send_reminder,
+        "date",
+        run_date=datetime.now(TZ) + timedelta(minutes=int(mins)),
+        args=[uid, dict(med)]
+    )
+
+    await call.answer(f"Snoozed for {mins} min ⏳")
+
+    try:
+        await call.message.edit_reply_markup()
+    except:
+        pass
 
 def schedule(m):
     h,mn=map(int,m["time"].split(":"))
