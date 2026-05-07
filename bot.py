@@ -1,101 +1,728 @@
-# ⚠️ большой код — это нормально
-
-import os, uuid, re
+import os
+import re
+import uuid
 from datetime import datetime, timedelta
-from aiogram.types import CallbackQuery
-import pytz, asyncpg
+
+import asyncpg
+import pytz
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import *
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardRemove,
+    CallbackQuery
+)
 from aiogram.utils import executor
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+
+# =========================================================
+# CONFIG
+# =========================================================
+
 API_TOKEN = os.getenv("BOT_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 TZ = pytz.timezone("Europe/Warsaw")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
+
 scheduler = AsyncIOScheduler(timezone=TZ)
 
 db = None
 user_lang = {}
 
-# ===== TEXTS =====
+WEEK_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+# =========================================================
+# TEXTS
+# =========================================================
 
 TEXTS = {
-"en":{"menu":"Menu","add":"➕ Add","today":"📋 Today","edit":"✏️ Edit","delete":"❌ Delete","taken":"✅ Mark as taken",
-"name":"Enter medicine name:","dose":"Enter dose:","freq":"Choose frequency:",
-"daily":"Every day","weekly":"Specific days","time":"Enter time (HH:MM):","days":"Select days:",
-"saved":"Saved ✅","choose_med":"Select a medicine:","choose_field":"Choose field:",
-"new_val":"Enter new value:","updated":"Updated ✅","deleted":"Deleted ❌",
-"today_empty":"No medicines today","invalid":"Invalid input","bad_time":"Invalid time format",
-"error":"Something went wrong. Please try again."},
+    "en": {
+        "choose_lang": "Choose language",
 
-"ru":{"menu":"Меню","add":"➕ Добавить","today":"📋 Сегодня","edit":"✏️ Редактировать","delete":"❌ Удалить","taken":"✅ Отметить как принятое",
-"name":"Введите название лекарства:","dose":"Введите дозировку:","freq":"Выберите частоту:",
-"daily":"Каждый день","weekly":"Выбрать дни","time":"Введите время (ЧЧ:ММ):","days":"Выберите дни:",
-"saved":"Сохранено ✅","choose_med":"Выберите лекарство:","choose_field":"Выберите поле:",
-"new_val":"Введите новое значение:","updated":"Обновлено ✅","deleted":"Удалено ❌",
-"today_empty":"Сегодня ничего нет","invalid":"Неверный ввод","bad_time":"Неверный формат времени",
-"error":"Что-то пошло не так. Попробуйте снова."},
+        "menu": "Menu",
 
-"pl":{"menu":"Menu","add":"➕ Dodaj","today":"📋 Dzisiaj","edit":"✏️ Edytuj","delete":"❌ Usuń","taken":"✅ Oznacz jako przyjęte",
-"name":"Podaj nazwę leku:","dose":"Podaj dawkę:","freq":"Wybierz częstotliwość:",
-"daily":"Codziennie","weekly":"Wybrane dni","time":"Podaj godzinę (HH:MM):","days":"Wybierz dni:",
-"saved":"Zapisano ✅","choose_med":"Wybierz lek:","choose_field":"Wybierz pole:",
-"new_val":"Podaj nową wartość:","updated":"Zaktualizowano ✅","deleted":"Usunięto ❌",
-"today_empty":"Brak leków na dziś","invalid":"Nieprawidłowe dane","bad_time":"Zły format godziny",
-"error":"Coś poszło nie tak. Spróbuj ponownie."}
+        "add": "➕ Add",
+        "today": "📋 Today",
+        "edit": "✏️ Edit",
+        "delete": "❌ Delete",
+        "taken": "✅ Mark as taken",
+
+        "name": "Enter medicine name:",
+        "dose": "Enter dose:",
+        "freq": "Choose frequency:",
+        "daily": "Every day",
+        "weekly": "Specific days",
+        "time": "Enter time (HH:MM):",
+        "days": "Select days:",
+        "saved": "Saved ✅",
+
+        "choose_med": "Select a medicine:",
+        "choose_field": "Choose field:",
+        "new_value": "Enter new value:",
+        "updated": "Updated ✅",
+        "deleted": "Deleted ❌",
+
+        "today_empty": "No medicines today",
+
+        "invalid": "Invalid input",
+        "bad_time": "Invalid time format",
+
+        "error": "Something went wrong. Please try again."
+    },
+
+    "ru": {
+        "choose_lang": "Выберите язык",
+
+        "menu": "Меню",
+
+        "add": "➕ Добавить",
+        "today": "📋 Сегодня",
+        "edit": "✏️ Редактировать",
+        "delete": "❌ Удалить",
+        "taken": "✅ Отметить как принятое",
+
+        "name": "Введите название лекарства:",
+        "dose": "Введите дозировку:",
+        "freq": "Выберите частоту:",
+        "daily": "Каждый день",
+        "weekly": "Выбрать дни",
+        "time": "Введите время (ЧЧ:ММ):",
+        "days": "Выберите дни:",
+        "saved": "Сохранено ✅",
+
+        "choose_med": "Выберите лекарство:",
+        "choose_field": "Выберите поле:",
+        "new_value": "Введите новое значение:",
+        "updated": "Обновлено ✅",
+        "deleted": "Удалено ❌",
+
+        "today_empty": "Сегодня ничего нет",
+
+        "invalid": "Неверный ввод",
+        "bad_time": "Неверный формат времени",
+
+        "error": "Что-то пошло не так. Попробуйте снова."
+    },
+
+    "pl": {
+        "choose_lang": "Wybierz język",
+
+        "menu": "Menu",
+
+        "add": "➕ Dodaj",
+        "today": "📋 Dzisiaj",
+        "edit": "✏️ Edytuj",
+        "delete": "❌ Usuń",
+        "taken": "✅ Oznacz jako przyjęte",
+
+        "name": "Podaj nazwę leku:",
+        "dose": "Podaj dawkę:",
+        "freq": "Wybierz częstotliwość:",
+        "daily": "Codziennie",
+        "weekly": "Wybrane dni",
+        "time": "Podaj godzinę (HH:MM):",
+        "days": "Wybierz dni:",
+        "saved": "Zapisano ✅",
+
+        "choose_med": "Wybierz lek:",
+        "choose_field": "Wybierz pole:",
+        "new_value": "Podaj nową wartość:",
+        "updated": "Zaktualizowano ✅",
+        "deleted": "Usunięto ❌",
+
+        "today_empty": "Brak leków na dziś",
+
+        "invalid": "Nieprawidłowe dane",
+        "bad_time": "Zły format godziny",
+
+        "error": "Coś poszło nie tak. Spróbuj ponownie."
+    }
 }
 
-def t(uid,k): return TEXTS[user_lang.get(uid,"en")][k]
 
-WEEK=["mon","tue","wed","thu","fri","sat","sun"]
+# =========================================================
+# HELPERS
+# =========================================================
 
-def valid_text(x): return bool(re.match(r"^[\w\s.,%+\-/()]+$", x))
+def t(uid, key):
+    lang = user_lang.get(uid, "en")
+    return TEXTS.get(lang, TEXTS["en"]).get(key, key)
 
-def valid_time(x):
-    try: datetime.strptime(x,"%H:%M"); return True
-    except: return False
 
-def menu(uid):
-    kb=ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(t(uid,"add"),t(uid,"today"))
-    kb.add(t(uid,"edit"),t(uid,"delete"))
-    kb.add(t(uid,"taken"))
-    return kb
+def valid_text(text):
+    return bool(re.match(r"^[\w\s.,%+\-/()]+$", text))
 
-def days_kb(selected=[]):
-    kb=InlineKeyboardMarkup(row_width=3)
-    for i,d in enumerate(WEEK):
-        label=f"✔ {d}" if i in selected else d
-        kb.insert(InlineKeyboardButton(label,callback_data=f"d_{i}"))
-    kb.add(InlineKeyboardButton("Done",callback_data="done"))
-    return kb
 
-async def send_reminder(uid,med):
-    kb=InlineKeyboardMarkup().add(
-        InlineKeyboardButton("✅",callback_data=f"take_{med['id']}"),
-        InlineKeyboardButton("⏳",callback_data=f"snooze_{med['id']}_15"),
-        InlineKeyboardButton("❌",callback_data=f"skip_{med['id']}")
+def valid_time(text):
+    try:
+        datetime.strptime(text, "%H:%M")
+        return True
+    except:
+        return False
+
+
+def main_menu(uid):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+
+    kb.add(
+        KeyboardButton(t(uid, "add")),
+        KeyboardButton(t(uid, "today"))
     )
-    await bot.send_message(uid,f"💊 {med['name']} ({med['dose']})",reply_markup=kb)
 
-# ===== REMINDER CALLBACKS =====
+    kb.add(
+        KeyboardButton(t(uid, "edit")),
+        KeyboardButton(t(uid, "delete"))
+    )
 
-@dp.callback_query_handler(lambda c: c.data.startswith("take_"))
-async def take(call: CallbackQuery):
-    uid = str(call.from_user.id)
-    mid = call.data.split("_")[1]
+    kb.add(
+        KeyboardButton(t(uid, "taken"))
+    )
+
+    return kb
+
+
+def days_keyboard(selected=None):
+    if selected is None:
+        selected = []
+
+    kb = InlineKeyboardMarkup(row_width=3)
+
+    for i, day in enumerate(WEEK_DAYS):
+        text = f"✔ {day}" if i in selected else day
+
+        kb.insert(
+            InlineKeyboardButton(
+                text=text,
+                callback_data=f"day_{i}"
+            )
+        )
+
+    kb.add(
+        InlineKeyboardButton(
+            text="Done",
+            callback_data="days_done"
+        )
+    )
+
+    return kb
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+async def init_db():
+    global db
+
+    db = await asyncpg.connect(DATABASE_URL)
 
     await db.execute("""
-    INSERT INTO logs(user_id, med_id, status, time)
+    CREATE TABLE IF NOT EXISTS users(
+        user_id TEXT PRIMARY KEY,
+        lang TEXT
+    )
+    """)
+
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS meds(
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        name TEXT,
+        dose TEXT,
+        med_time TEXT,
+        freq TEXT,
+        days INT[]
+    )
+    """)
+
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS logs(
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
+        med_id TEXT,
+        status TEXT,
+        created_at TIMESTAMP
+    )
+    """)
+
+
+# =========================================================
+# SCHEDULER
+# =========================================================
+
+async def send_reminder(user_id, med):
+    kb = InlineKeyboardMarkup()
+
+    kb.add(
+        InlineKeyboardButton(
+            "✅",
+            callback_data=f"take_{med['id']}"
+        ),
+
+        InlineKeyboardButton(
+            "⏳",
+            callback_data=f"snooze_{med['id']}_15"
+        ),
+
+        InlineKeyboardButton(
+            "❌",
+            callback_data=f"skip_{med['id']}"
+        )
+    )
+
+    await bot.send_message(
+        user_id,
+        f"💊 {med['name']} ({med['dose']})",
+        reply_markup=kb
+    )
+
+
+def schedule_med(med):
+    hour, minute = map(int, med["med_time"].split(":"))
+
+    try:
+        scheduler.remove_job(med["id"])
+    except:
+        pass
+
+    if med["freq"] == "daily":
+
+        scheduler.add_job(
+            send_reminder,
+            trigger="cron",
+            id=med["id"],
+            hour=hour,
+            minute=minute,
+            args=[med["user_id"], med]
+        )
+
+    else:
+
+        scheduler.add_job(
+            send_reminder,
+            trigger="cron",
+            id=med["id"],
+            day_of_week=",".join(
+                [WEEK_DAYS[d] for d in med["days"]]
+            ),
+            hour=hour,
+            minute=minute,
+            args=[med["user_id"], med]
+        )
+
+
+async def reload_jobs():
+    scheduler.remove_all_jobs()
+
+    meds = await db.fetch("SELECT * FROM meds")
+
+    for med in meds:
+        schedule_med(dict(med))
+
+
+# =========================================================
+# STATES
+# =========================================================
+
+class AddMed(StatesGroup):
+    name = State()
+    dose = State()
+    freq = State()
+    time = State()
+    days = State()
+
+
+# =========================================================
+# START
+# =========================================================
+
+@dp.message_handler(commands=["start"])
+async def start(message):
+
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+
+    kb.add(
+        KeyboardButton("English"),
+        KeyboardButton("Русский"),
+        KeyboardButton("Polski")
+    )
+
+    await message.answer(
+        "Choose language",
+        reply_markup=kb
+    )
+
+
+@dp.message_handler(lambda m: m.text and m.text in ["English", "Русский", "Polski"])
+async def set_language(message):
+
+    uid = str(message.from_user.id)
+
+    lang_map = {
+        "English": "en",
+        "Русский": "ru",
+        "Polski": "pl"
+    }
+
+    lang = lang_map[message.text]
+
+    user_lang[uid] = lang
+
+    await db.execute("""
+    INSERT INTO users(user_id, lang)
+    VALUES($1, $2)
+    ON CONFLICT (user_id)
+    DO UPDATE SET lang=$2
+    """, uid, lang)
+
+    await message.answer(
+        t(uid, "menu"),
+        reply_markup=main_menu(uid)
+    )
+
+
+# =========================================================
+# ADD
+# =========================================================
+
+@dp.message_handler(lambda m: m.text and (
+    "Add" in m.text
+    or "Добавить" in m.text
+    or "Dodaj" in m.text
+))
+async def add_start(message):
+
+    await message.answer(
+        t(str(message.from_user.id), "name")
+    )
+
+    await AddMed.name.set()
+
+
+@dp.message_handler(state=AddMed.name)
+async def add_name(message, state):
+
+    uid = str(message.from_user.id)
+
+    if not valid_text(message.text):
+        return await message.answer(t(uid, "invalid"))
+
+    await state.update_data(name=message.text)
+
+    await message.answer(t(uid, "dose"))
+
+    await AddMed.dose.set()
+
+
+@dp.message_handler(state=AddMed.dose)
+async def add_dose(message, state):
+
+    uid = str(message.from_user.id)
+
+    await state.update_data(dose=message.text)
+
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+
+    kb.add(
+        KeyboardButton(t(uid, "daily")),
+        KeyboardButton(t(uid, "weekly"))
+    )
+
+    await message.answer(
+        t(uid, "freq"),
+        reply_markup=kb
+    )
+
+    await AddMed.freq.set()
+
+
+@dp.message_handler(state=AddMed.freq)
+async def add_freq(message, state):
+
+    txt = message.text.lower()
+
+    freq = "daily"
+
+    if (
+        "specific" in txt
+        or "выб" in txt
+        or "wybrane" in txt
+    ):
+        freq = "weekly"
+
+    await state.update_data(freq=freq)
+
+    await message.answer(
+        t(str(message.from_user.id), "time"),
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    await AddMed.time.set()
+
+
+@dp.message_handler(state=AddMed.time)
+async def add_time(message, state):
+
+    uid = str(message.from_user.id)
+
+    if not valid_time(message.text):
+        return await message.answer(t(uid, "bad_time"))
+
+    await state.update_data(med_time=message.text)
+
+    data = await state.get_data()
+
+    if data["freq"] == "weekly":
+
+        await message.answer(
+            t(uid, "days"),
+            reply_markup=days_keyboard()
+        )
+
+        await AddMed.days.set()
+
+    else:
+
+        await finish_add(message, state)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("day_"), state=AddMed.days)
+async def select_days(call, state):
+
+    data = await state.get_data()
+
+    selected = data.get("days", [])
+
+    day = int(call.data.split("_")[1])
+
+    if day in selected:
+        selected.remove(day)
+    else:
+        selected.append(day)
+
+    await state.update_data(days=selected)
+
+    await call.message.edit_reply_markup(
+        days_keyboard(selected)
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == "days_done", state=AddMed.days)
+async def finish_days(call, state):
+
+    data = await state.get_data()
+
+    if not data.get("days"):
+        return await call.answer("Select at least one day")
+
+    await finish_add(call.message, state)
+
+
+async def finish_add(message, state):
+
+    uid = str(message.chat.id)
+
+    data = await state.get_data()
+
+    med = {
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "name": data["name"],
+        "dose": data["dose"],
+        "med_time": data["med_time"],
+        "freq": data["freq"],
+        "days": data.get("days", [])
+    }
+
+    await db.execute("""
+    INSERT INTO meds(
+        id,
+        user_id,
+        name,
+        dose,
+        med_time,
+        freq,
+        days
+    )
+    VALUES($1,$2,$3,$4,$5,$6,$7)
+    """,
+        med["id"],
+        med["user_id"],
+        med["name"],
+        med["dose"],
+        med["med_time"],
+        med["freq"],
+        med["days"]
+    )
+
+    schedule_med(med)
+
+    await message.answer(
+        t(uid, "saved"),
+        reply_markup=main_menu(uid)
+    )
+
+    await state.finish()
+
+
+# =========================================================
+# TODAY
+# =========================================================
+
+@dp.message_handler(lambda m: m.text and (
+    "Today" in m.text
+    or "Сегодня" in m.text
+    or "Dzisiaj" in m.text
+))
+async def today(message):
+
+    uid = str(message.from_user.id)
+
+    now = datetime.now(TZ)
+
+    meds = await db.fetch("""
+    SELECT * FROM meds
+    WHERE user_id=$1
+    """, uid)
+
+    logs = await db.fetch("""
+    SELECT * FROM logs
+    WHERE user_id=$1
+    AND DATE(created_at AT TIME ZONE 'UTC'
+    AT TIME ZONE 'Europe/Warsaw') = CURRENT_DATE
+    """, uid)
+
+    log_map = {
+        log["med_id"]: log["status"]
+        for log in logs
+    }
+
+    result = []
+
+    for med in meds:
+
+        days = med["days"] or []
+
+        show = (
+            med["freq"] == "daily"
+            or now.weekday() in days
+        )
+
+        if not show:
+            continue
+
+        status = log_map.get(
+            med["id"],
+            "pending"
+        )
+
+        icon = {
+            "taken": "✅",
+            "skipped": "❌",
+            "snoozed": "⏳"
+        }.get(status, "⏺")
+
+        result.append(
+            f"{med['med_time']} {med['name']} {icon}"
+        )
+
+    result = sorted(result)
+
+    if not result:
+        return await message.answer(
+            t(uid, "today_empty")
+        )
+
+    await message.answer("\n".join(result))
+
+
+# =========================================================
+# TAKEN MENU
+# =========================================================
+
+@dp.message_handler(lambda m: m.text and (
+    "Mark as taken" in m.text
+    or "принятое" in m.text.lower()
+    or "przyjęte" in m.text.lower()
+))
+async def taken_menu(message):
+
+    uid = str(message.from_user.id)
+
+    now = datetime.now(TZ)
+
+    meds = await db.fetch("""
+    SELECT * FROM meds
+    WHERE user_id=$1
+    """, uid)
+
+    kb = InlineKeyboardMarkup()
+
+    found = False
+
+    for med in meds:
+
+        days = med["days"] or []
+
+        show = (
+            med["freq"] == "daily"
+            or now.weekday() in days
+        )
+
+        if not show:
+            continue
+
+        found = True
+
+        kb.add(
+            InlineKeyboardButton(
+                med["name"],
+                callback_data=f"take_{med['id']}"
+            )
+        )
+
+    if not found:
+        return await message.answer(
+            t(uid, "today_empty")
+        )
+
+    await message.answer(
+        t(uid, "choose_med"),
+        reply_markup=kb
+    )
+
+
+# =========================================================
+# CALLBACKS
+# =========================================================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("take_"))
+async def take_callback(call: CallbackQuery):
+
+    uid = str(call.from_user.id)
+
+    med_id = call.data.split("_")[1]
+
+    await db.execute("""
+    INSERT INTO logs(
+        user_id,
+        med_id,
+        status,
+        created_at
+    )
     VALUES($1,$2,'taken',NOW())
-    """, uid, mid)
+    """, uid, med_id)
 
     await call.answer("Taken ✅")
 
@@ -106,14 +733,21 @@ async def take(call: CallbackQuery):
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("skip_"))
-async def skip(call: CallbackQuery):
+async def skip_callback(call: CallbackQuery):
+
     uid = str(call.from_user.id)
-    mid = call.data.split("_")[1]
+
+    med_id = call.data.split("_")[1]
 
     await db.execute("""
-    INSERT INTO logs(user_id, med_id, status, time)
+    INSERT INTO logs(
+        user_id,
+        med_id,
+        status,
+        created_at
+    )
     VALUES($1,$2,'skipped',NOW())
-    """, uid, mid)
+    """, uid, med_id)
 
     await call.answer("Skipped ❌")
 
@@ -124,27 +758,33 @@ async def skip(call: CallbackQuery):
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("snooze_"))
-async def snooze(call: CallbackQuery):
+async def snooze_callback(call: CallbackQuery):
+
     uid = str(call.from_user.id)
 
-    _, mid, mins = call.data.split("_")
+    _, med_id, mins = call.data.split("_")
 
-    med = await db.fetchrow(
-        "SELECT * FROM meds WHERE id=$1",
-        mid
-    )
+    med = await db.fetchrow("""
+    SELECT * FROM meds
+    WHERE id=$1
+    """, med_id)
 
     if not med:
         return await call.answer("Medicine not found")
 
     await db.execute("""
-    INSERT INTO logs(user_id, med_id, status, time)
+    INSERT INTO logs(
+        user_id,
+        med_id,
+        status,
+        created_at
+    )
     VALUES($1,$2,'snoozed',NOW())
-    """, uid, mid)
+    """, uid, med_id)
 
     scheduler.add_job(
         send_reminder,
-        "date",
+        trigger="date",
         run_date=datetime.now(TZ) + timedelta(minutes=int(mins)),
         args=[uid, dict(med)]
     )
@@ -156,148 +796,117 @@ async def snooze(call: CallbackQuery):
     except:
         pass
 
-def schedule(m):
-    h,mn=map(int,m["time"].split(":"))
-    try: scheduler.remove_job(m["id"])
-    except: pass
 
-    if m["freq"]=="daily":
-        scheduler.add_job(send_reminder,"cron",args=[m["user_id"],m],hour=h,minute=mn,id=m["id"])
-    else:
-        scheduler.add_job(send_reminder,"cron",
-            args=[m["user_id"],m],
-            day_of_week=",".join([WEEK[d] for d in m["days"]]),
-            hour=h,minute=mn,id=m["id"])
+# =========================================================
+# DELETE
+# =========================================================
 
-async def reload_jobs():
-    scheduler.remove_all_jobs()
-    rows=await db.fetch("SELECT * FROM meds")
-    for r in rows:
-        schedule(dict(r))
+@dp.message_handler(lambda m: m.text and (
+    "Delete" in m.text
+    or "Удалить" in m.text
+    or "Usuń" in m.text
+))
+async def delete_menu(message):
 
-async def init_db():
-    global db
-    db = await asyncpg.connect(DB_URL)
+    uid = str(message.from_user.id)
 
-    await db.execute("""CREATE TABLE IF NOT EXISTS users(user_id TEXT PRIMARY KEY, lang TEXT);""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS meds(id TEXT PRIMARY KEY,user_id TEXT,name TEXT,dose TEXT,time TEXT,freq TEXT,days INT[]);""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS logs(id SERIAL PRIMARY KEY,user_id TEXT,med_id TEXT,status TEXT,time TIMESTAMP);""")
+    meds = await db.fetch("""
+    SELECT id, name FROM meds
+    WHERE user_id=$1
+    """, uid)
 
-# ===== START =====
+    kb = InlineKeyboardMarkup()
 
-@dp.message_handler(commands=["start"])
-async def start(msg):
-    kb=ReplyKeyboardMarkup(resize_keyboard=True).add("English","Русский","Polski")
-    await msg.answer("Choose language",reply_markup=kb)
+    for med in meds:
 
-@dp.message_handler(lambda m: m.text in ["English","Русский","Polski"])
-async def set_lang(msg):
-    uid=str(msg.from_user.id)
-    langs={"English":"en","Русский":"ru","Polski":"pl"}
-    user_lang[uid]=langs[msg.text]
+        kb.add(
+            InlineKeyboardButton(
+                med["name"],
+                callback_data=f"delete_{med['id']}"
+            )
+        )
+
+    await message.answer(
+        t(uid, "choose_med"),
+        reply_markup=kb
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("delete_"))
+async def delete_callback(call: CallbackQuery):
+
+    med_id = call.data.split("_")[1]
+
+    try:
+        scheduler.remove_job(med_id)
+    except:
+        pass
 
     await db.execute("""
-    INSERT INTO users(user_id,lang) VALUES($1,$2)
-    ON CONFLICT (user_id) DO UPDATE SET lang=$2
-    """,uid,langs[msg.text])
+    DELETE FROM meds
+    WHERE id=$1
+    """, med_id)
 
-    await msg.answer(t(uid,"menu"),reply_markup=menu(uid))
+    await db.execute("""
+    DELETE FROM logs
+    WHERE med_id=$1
+    """, med_id)
 
-# ===== ADD =====
+    await call.answer("Deleted")
 
-class Add(StatesGroup):
-    name=State();dose=State();freq=State();time=State();days=State()
+    try:
+        await call.message.edit_reply_markup()
+    except:
+        pass
 
-@dp.message_handler(lambda m: "Add" in m.text or "Добавить" in m.text or "Dodaj" in m.text)
-async def add(msg):
-    await msg.answer(t(str(msg.from_user.id),"name"))
-    await Add.name.set()
 
-@dp.message_handler(state=Add.name)
-async def a1(msg,state):
-    if not valid_text(msg.text):
-        return await msg.answer(t(str(msg.from_user.id),"invalid"))
-    await state.update_data(name=msg.text)
-    await msg.answer(t(str(msg.from_user.id),"dose"))
-    await Add.dose.set()
+# =========================================================
+# FALLBACK
+# =========================================================
 
-@dp.message_handler(state=Add.dose)
-async def a2(msg,state):
-    await state.update_data(dose=msg.text)
-    uid=str(msg.from_user.id)
-    kb=ReplyKeyboardMarkup(resize_keyboard=True).add(t(uid,"daily"),t(uid,"weekly"))
-    await msg.answer(t(uid,"freq"),reply_markup=kb)
-    await Add.freq.set()
+@dp.message_handler()
+async def fallback(message):
 
-@dp.message_handler(state=Add.freq)
-async def a3(msg,state):
-    txt=msg.text.lower()
-    await state.update_data(freq="daily" if "day" in txt or "каж" in txt or "cod" in txt else "weekly")
-    await msg.answer(t(str(msg.from_user.id),"time"),reply_markup=ReplyKeyboardRemove())
-    await Add.time.set()
+    uid = str(message.from_user.id)
 
-@dp.message_handler(state=Add.time)
-async def a4(msg,state):
-    if not valid_time(msg.text):
-        return await msg.answer(t(str(msg.from_user.id),"bad_time"))
-    await state.update_data(time=msg.text)
-    data=await state.get_data()
+    await message.answer(
+        t(uid, "error"),
+        reply_markup=main_menu(uid)
+    )
 
-    if data["freq"]=="weekly":
-        await msg.answer(t(str(msg.from_user.id),"days"),reply_markup=days_kb())
-        await Add.days.set()
-    else:
-        await finish_add(msg,state)
 
-@dp.callback_query_handler(lambda c:c.data.startswith("d_"),state=Add.days)
-async def a_days(call,state):
-    if call.data=="done":
-        data=await state.get_data()
-        if not data.get("days"):
-            await call.answer("Select at least one day")
-            return
-        await finish_add(call.message,state)
-        return
+# =========================================================
+# STARTUP
+# =========================================================
 
-    d=int(call.data.split("_")[1])
-    data=await state.get_data()
-    days=data.get("days") or []
+async def on_startup(_):
 
-    if d in days:
-        days.remove(d)
-    else:
-        days.append(d)
-
-    await state.update_data(days=days)
-    await call.message.edit_reply_markup(days_kb(days))
-
-async def finish_add(msg,state):
-    data=await state.get_data()
-    uid=str(msg.from_user.id)
-
-    m={"id":str(uuid.uuid4()),"user_id":uid,**data,"days":data.get("days") or []}
-
-    await db.execute("""INSERT INTO meds VALUES($1,$2,$3,$4,$5,$6,$7)""",
-        m["id"],m["user_id"],m["name"],m["dose"],m["time"],m["freq"],m["days"])
-
-    schedule(m)
-    await msg.answer(t(uid,"saved"),reply_markup=menu(uid))
-    await state.finish()
-
-# ===== STARTUP =====
-
-async def on_startup(dp):
     await init_db()
 
-    # 🔥 КРИТИЧНЫЙ ФИКС
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(
+        drop_pending_updates=True
+    )
 
-    rows=await db.fetch("SELECT * FROM users")
-    for r in rows:
-        user_lang[r["user_id"]] = r["lang"]
+    rows = await db.fetch("""
+    SELECT * FROM users
+    """)
+
+    for row in rows:
+        user_lang[row["user_id"]] = row["lang"]
 
     await reload_jobs()
+
     scheduler.start()
 
-if __name__=="__main__":
-    executor.start_polling(dp,on_startup=on_startup)
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+
+    executor.start_polling(
+        dp,
+        on_startup=on_startup,
+        skip_updates=True
+    )
